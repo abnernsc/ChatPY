@@ -1,322 +1,577 @@
+from tkinter import *  # Importa todas as funções da interface gráfica
+from tkinter import scrolledtext, messagebox, filedialog  # Importa componentes específicos
 import socket  # Para comunicação de rede
-import time    # Para pausas no código
-import os      # Para trabalhar com arquivos
+import threading  # Para executar várias coisas ao mesmo tempo
+import time  # Para pausas no código
+import os  # Para trabalhar com arquivos
 
-def enviar_arquivo_tcp(sock):
-    """Envia um arquivo via TCP."""
-    try:  # Tenta executar o código
-        caminho = input("Digite o caminho do arquivo para enviar: ")  # Pede o arquivo ao usuário
-        if not os.path.exists(caminho):  # Verifica se o arquivo existe
-            print("Arquivo não encontrado.")  # Avisa se não existe
-            sock.send("ERRO_ARQUIVO".encode("utf-8"))  # Avisa o outro lado
-            return  # Para a função
+# Variáveis globais - acessíveis em todo o programa
+janela_config = None  # Janela de configuração inicial
+janela_chat = None  # Janela do chat
+sock = None  # Socket principal
+conn = None  # Conexão TCP específica
+cliente_addr = None  # Endereço do cliente conectado
+protocolo = None  # TCP ou UDP
+modo = None  # host ou cliente
+running = False  # Se o programa está rodando
+meu_turno = False  # Se é minha vez de falar
+modoselecionado = None  # Variável do botão de modo
+protselect = None  # Variável do botão de protocolo
+ip_escrever = None  # Campo de texto para IP
+porta_escrever = None  # Campo de texto para porta
+area_mensagens = None  # Área onde aparecem as mensagens
+entrada_mensagem = None  # Campo para digitar mensagem
+btn_enviar = None  # Botão de enviar
+frame_turno = None  # Área do indicador de turno
+label_turno = None  # Texto do indicador de turno
+arquivo_para_enviar = None  # Arquivo selecionado para envio
+
+def atualizar_interface():
+    """Atualiza a interface baseado no modo selecionado"""
+    if modoselecionado.get() == 'host':  # Se é host
+        ip_escrever.config(state='disabled')  # Desabilita campo de IP
+    elif modoselecionado.get() == 'cliente':  # Se é cliente
+        ip_escrever.config(state='normal')  # Habilita campo de IP
+
+def atualizar_status(texto):
+    """Atualiza status na janela de configuração"""
+    print(f"Status: {texto}")  # Mostra status no terminal
+
+def conectar(ip, porta):
+    """Realiza a conexão propriamente dita"""
+    global sock, conn, cliente_addr, meu_turno  # Usa variáveis globais
+    
+    try:  # Tenta conectar
+        # Define tipo de socket
+        tipo_socket = socket.SOCK_STREAM if protocolo == 'TCP' else socket.SOCK_DGRAM
         
-        nome_arquivo = os.path.basename(caminho)  # Pega só o nome do arquivo
-        sock.send(nome_arquivo.encode("utf-8"))  # Envia o nome
-        time.sleep(0.1)  # Pequena pausa
+        if modo == 'host':  # Lógica do Host
+            # Configuração automática para IPv4/IPv6
+            info_addr = socket.getaddrinfo(None, porta, socket.AF_UNSPEC, tipo_socket, 0, socket.AI_PASSIVE)[0]
+            sock = socket.socket(info_addr[0], info_addr[1])  # Cria socket
+            # Se IPv6, aceita também IPv4
+            if info_addr[0] == socket.AF_INET6: 
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            sock.bind(info_addr[4])  # Liga socket à porta
+            
+            atualizar_status("Aguardando conexão...")  # Avisa que está esperando
+            
+            if protocolo == 'TCP':  # Se TCP
+                sock.listen()  # Escuta conexões
+                conn, cliente_addr = sock.accept()  # Aceita cliente
+                meu_turno = False  # Host escuta primeiro
+            else:  # Se UDP
+                dados, cliente_addr = sock.recvfrom(1024)  # Primeira mensagem
+                meu_turno = False  # Host escuta primeiro
+                
+        else:  # Lógica do Cliente
+            # Configuração para conectar no host
+            info_addr = socket.getaddrinfo(ip, porta, socket.AF_UNSPEC, tipo_socket)[0]
+            sock = socket.socket(info_addr[0], info_addr[1])  # Cria socket
+            cliente_addr = info_addr[4]  # Guarda endereço
+            
+            if protocolo == 'TCP':  # Se TCP
+                sock.connect(info_addr[4])  # Conecta no host
+            else:  # Se UDP
+                sock.sendto("OI_HOST".encode("utf-8"), info_addr[4])  # Primeira mensagem
+            
+            meu_turno = True  # Cliente fala primeiro
         
-        with open(caminho, "rb") as f:  # Abre o arquivo para ler
-            while True:  # Loop para ler pedaços
+        # Se chegou até aqui, conexão funcionou
+        janela_config.after(0, abrir_chat)  # Abre janela de chat
+        
+    except Exception as e:  # Se der erro
+        messagebox.showerror("Erro de Conexão", f"Falha ao conectar: {e}")  # Mostra erro
+
+def iniciar_conexao():
+    """Inicia a conexão baseada nas configurações"""
+    global modo, protocolo  # Usa variáveis globais
+    
+    modo = modoselecionado.get()  # Pega modo selecionado
+    protocolo = protselect.get()  # Pega protocolo selecionado
+    
+    if modo == "cliente":  # Se é cliente
+        ip = ip_escrever.get()  # Pega IP digitado
+    elif modo == "host":  # Se é host
+        ip = "0.0.0.0"  # IP genérico
+    
+    porta = int(porta_escrever.get() or "50000")  # Pega porta ou usa padrão
+    
+    # Inicia conexão em thread separada para não travar interface
+    thread_conexao = threading.Thread(target=conectar, args=(ip, porta))
+    thread_conexao.daemon = True  # Thread morre com o programa
+    thread_conexao.start()  # Inicia thread
+
+def criar_janela_config():
+    """Cria a janela de configuração inicial"""
+    global janela_config, modoselecionado, protselect, ip_escrever, porta_escrever  # Usa variáveis globais
+    
+    janela_config = Tk()  # Cria janela principal
+    janela_config.title("Pychat P2P - Configuração")  # Título da janela
+    janela_config.geometry("400x350")  # Tamanho da janela
+    janela_config.resizable(False, False)  # Não pode redimensionar
+
+    # Seção de modo
+    MODO_TEXTO = Label(janela_config, text="1. ESCOLHA SEU MODO:", font=("Arial", 10, "bold"))
+    MODO_TEXTO.grid(column=0, row=0, columnspan=3, sticky='w', padx=10, pady=(10,5))  # Posiciona na grade
+
+    modoselecionado = StringVar()  # Variável para botões de opção
+    modoselecionado.set("host")  # Valor padrão
+
+    # Botões de opção para modo
+    HOST = Radiobutton(janela_config, text="Host (Servidor)", variable=modoselecionado, 
+                      value="host", command=atualizar_interface)
+    HOST.grid(column=0, row=1, sticky='w', padx=20)  # Posiciona
+
+    CLIENTE = Radiobutton(janela_config, text="Cliente", variable=modoselecionado, 
+                         value="cliente", command=atualizar_interface)
+    CLIENTE.grid(column=0, row=2, sticky='w', padx=20)  # Posiciona
+
+    # Seção de endereço
+    ENDERECO_TEXTO = Label(janela_config, text="2. DIGITE O ENDEREÇO:", font=("Arial", 10, "bold"))
+    ENDERECO_TEXTO.grid(column=0, row=3, columnspan=3, sticky="w", padx=10, pady=(20,5))
+
+    IP_HOST = Label(janela_config, text="IP DO HOST:")  # Rótulo
+    IP_HOST.grid(column=0, row=4, sticky='w', padx=20, pady=(5,0))
+
+    ip_escrever = Entry(janela_config, width=25)  # Campo de texto
+    ip_escrever.grid(column=1, row=4, padx=10, sticky='ew')
+    ip_escrever.insert(0, "127.0.0.1")  # IP padrão (localhost)
+
+    PORTA = Label(janela_config, text="PORTA:")  # Rótulo
+    PORTA.grid(column=0, row=5, sticky='w', padx=20, pady=(5,0))
+
+    porta_escrever = Entry(janela_config, width=25)  # Campo de texto
+    porta_escrever.grid(column=1, row=5, padx=10, sticky='ew')
+    porta_escrever.insert(0, "50000")  # Porta padrão
+
+    # Seção de protocolo
+    PROTOCOLO_TEXTO = Label(janela_config, text="3. ESCOLHA SEU PROTOCOLO:", font=("Arial", 10, "bold"))
+    PROTOCOLO_TEXTO.grid(column=0, row=6, columnspan=3, sticky='w', padx=10, pady=(20,5))
+
+    protselect = StringVar()  # Variável para protocolo
+    protselect.set("TCP")  # Valor padrão
+
+    # Botões de opção para protocolo
+    TCP = Radiobutton(janela_config, text="TCP", variable=protselect, value="TCP")
+    TCP.grid(column=0, row=7, sticky='w', padx=20)
+
+    UDP = Radiobutton(janela_config, text="UDP", variable=protselect, value="UDP")
+    UDP.grid(column=0, row=8, sticky='w', padx=20)
+
+    # Botão para iniciar
+    INIC_CONEX = Button(janela_config, text="INICIAR CONEXÃO", 
+                       command=iniciar_conexao, font=("Arial", 10, "bold"), padx=20, pady=5)
+    INIC_CONEX.grid(column=1, row=9, padx=10, pady=20, sticky="e")
+
+    atualizar_interface()  # Atualiza interface inicial
+    janela_config.protocol("WM_DELETE_WINDOW", fechar_aplicacao)  # Ação ao fechar janela
+
+def abrir_chat():
+    """Abre a janela de chat"""
+    janela_config.withdraw()  # Esconde a janela de configuração
+    criar_janela_chat()  # Cria janela de chat
+
+def atualizar_turno():
+    """Atualiza o indicador de turno"""
+    if meu_turno:  # Se é minha vez
+        label_turno.config(text="SEU TURNO - Digite sua mensagem")  # Avisa que é minha vez
+        entrada_mensagem.config(state='normal')  # Habilita digitação
+        btn_enviar.config(state='normal')  # Habilita botão
+    else:  # Se é vez do outro
+        outro = "Cliente" if modo == "host" else "Host"  # Define quem é o outro
+        label_turno.config(text=f"TURNO DO {outro.upper()} - Aguardando...")  # Avisa vez do outro
+        entrada_mensagem.config(state='disabled')  # Desabilita digitação
+        btn_enviar.config(state='disabled')  # Desabilita botão
+
+def adicionar_mensagem(remetente, mensagem):
+    """Adiciona mensagem à área de chat"""
+    area_mensagens.config(state=NORMAL)  # Permite edição
+    timestamp = time.strftime("%H:%M:%S")  # Pega horário atual
+    
+    if remetente == "SISTEMA":  # Se é mensagem do sistema
+        area_mensagens.insert(END, f"[{timestamp}] {mensagem}\n")  # Adiciona sem remetente
+    else:  # Se é mensagem de usuário
+        area_mensagens.insert(END, f"[{timestamp}] {remetente}: {mensagem}\n")  # Adiciona com remetente
+    
+    area_mensagens.config(state=DISABLED)  # Bloqueia edição
+    area_mensagens.see(END)  # Rola para o final
+
+def enviar_mensagem(event=None):
+    """Envia mensagem de texto"""
+    global meu_turno  # Usa variável global
+    
+    if not meu_turno:  # Se não é minha vez
+        return  # Não faz nada
+        
+    mensagem = entrada_mensagem.get().strip()  # Pega mensagem digitada
+    if not mensagem:  # Se não digitou nada
+        return  # Não faz nada
+        
+    try:  # Tenta enviar
+        # Envia a mensagem
+        if protocolo == 'TCP':  # Se TCP
+            if modo == 'host':  # Se é host
+                conn.send(mensagem.encode("utf-8"))  # Envia pela conexão
+            else:  # Se é cliente
+                sock.send(mensagem.encode("utf-8"))  # Envia pelo socket
+        else:  # Se UDP
+            sock.sendto(mensagem.encode("utf-8"), cliente_addr)  # Envia para endereço
+        
+        # Adiciona mensagem na tela
+        adicionar_mensagem("Você", mensagem)  # Mostra na tela
+        entrada_mensagem.delete(0, END)  # Limpa campo de texto
+        
+        # Processa comandos especiais
+        if mensagem.lower() == '/sair':  # Se quer sair
+            adicionar_mensagem("SISTEMA", "Encerrando chat...")  # Avisa
+            fechar_chat()  # Fecha chat
+            return  # Para função
+        elif mensagem.lower() == '/enviar':  # Se quer enviar arquivo
+            processar_comando_enviar()  # Processa comando
+            return  # Para função
+            
+        # Troca o turno
+        meu_turno = False  # Agora é vez do outro
+        atualizar_turno()  # Atualiza interface
+        
+    except Exception as e:  # Se der erro
+        messagebox.showerror("Erro", f"Erro ao enviar mensagem: {e}")  # Mostra erro
+
+def processar_comando_enviar():
+    """Processa o comando /enviar e inicia transferência"""
+    global arquivo_para_enviar  # Usa variável global
+    
+    arquivo = filedialog.askopenfilename(title="Selecionar arquivo para enviar")  # Abre diálogo de arquivo
+    if not arquivo:  # Se não selecionou nenhum
+        adicionar_mensagem("SISTEMA", "Nenhum arquivo selecionado.")  # Avisa
+        return  # Para função
+        
+    adicionar_mensagem("Você", "Enviando arquivo...")  # Avisa que está enviando
+    arquivo_para_enviar = arquivo  # Guarda arquivo selecionado
+    
+    # Inicia transferência em thread separada
+    thread_envio = threading.Thread(target=executar_envio_arquivo)
+    thread_envio.daemon = True  # Thread morre com programa
+    thread_envio.start()  # Inicia thread
+
+def executar_envio_arquivo():
+    """Executa o envio do arquivo usando as funções originais"""
+    global meu_turno  # Usa variável global
+    
+    try:  # Tenta enviar
+        if protocolo == 'TCP':  # Se TCP
+            sock_para_envio = conn if modo == 'host' else sock  # Define socket correto
+            enviar_arquivo_tcp(sock_para_envio, arquivo_para_enviar)  # Envia arquivo
+        else:  # Se UDP
+            enviar_arquivo_udp(sock, cliente_addr, arquivo_para_enviar)  # Envia arquivo
+        
+        # Avisa sucesso na interface
+        janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", "Arquivo enviado!"))
+    except Exception as e:  # Se der erro
+        # Avisa erro na interface
+        janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", f"Erro no envio: {e}"))
+    finally:  # Sempre executa
+        # Troca o turno
+        meu_turno = False  # Vez do outro
+        janela_chat.after(0, atualizar_turno)  # Atualiza interface
+
+def loop_receber_mensagens():
+    """Loop para receber mensagens (roda em thread separada)"""
+    global meu_turno  # Usa variável global
+    
+    while running:  # Enquanto programa está rodando
+        try:  # Tenta receber
+            if meu_turno:  # Se é minha vez
+                time.sleep(0.1)  # Espera um pouco
+                continue  # Continua loop
+            
+            # Recebe mensagem
+            if protocolo == 'TCP':  # Se TCP
+                if modo == 'host':  # Se é host
+                    msg = conn.recv(1024).decode("utf-8")  # Recebe pela conexão
+                else:  # Se é cliente
+                    msg = sock.recv(1024).decode("utf-8")  # Recebe pelo socket
+            else:  # Se UDP
+                dados, _ = sock.recvfrom(1024)  # Recebe dados
+                msg = dados.decode("utf-8")  # Decodifica mensagem
+            
+            if not msg:  # Se não recebeu nada
+                break  # Para loop
+            
+            # Processa a mensagem
+            if msg.startswith('/enviar'):  # Se quer enviar arquivo
+                janela_chat.after(0, lambda: adicionar_mensagem("Contato", "Enviando arquivo..."))  # Avisa
+                receber_arquivo()  # Recebe arquivo
+            elif msg.lower() == '/sair':  # Se quer sair
+                janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", "Contato encerrou o chat."))  # Avisa
+                break  # Para loop
+            else:  # Mensagem normal
+                outro = "Host" if modo == "cliente" else "Cliente"  # Define remetente
+                janela_chat.after(0, lambda m=msg: adicionar_mensagem(outro, m))  # Mostra mensagem
+            
+            # Troca o turno
+            meu_turno = True  # Agora é minha vez
+            janela_chat.after(0, atualizar_turno)  # Atualiza interface
+            
+        except Exception as e:  # Se der erro
+            if running:  # Se programa ainda está rodando
+                janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", f"Erro na conexão: {e}"))  # Mostra erro
+            break  # Para loop
+
+def receber_arquivo():
+    """Recebe arquivo em thread separada"""
+    thread_receber = threading.Thread(target=executar_receber_arquivo)  # Cria thread
+    thread_receber.daemon = True  # Thread morre com programa
+    thread_receber.start()  # Inicia thread
+
+def executar_receber_arquivo():
+    """Executa o recebimento usando as funções originais"""
+    try:  # Tenta receber
+        if protocolo == 'TCP':  # Se TCP
+            sock_para_receber = conn if modo == 'host' else sock  # Define socket correto
+            receber_arquivo_tcp(sock_para_receber)  # Recebe arquivo
+        else:  # Se UDP
+            receber_arquivo_udp(sock, cliente_addr)  # Recebe arquivo
+            
+        # Avisa sucesso na interface
+        janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", "Arquivo recebido!"))
+    except Exception as e:  # Se der erro
+        # Avisa erro na interface
+        janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", f"Erro no recebimento: {e}"))
+
+def enviar_arquivo_tcp(sock_envio, caminho):
+    """Versão modificada da função original - sem input()"""
+    try:  # Tenta enviar
+        if not os.path.exists(caminho):  # Se arquivo não existe
+            sock_envio.send("ERRO_ARQUIVO".encode("utf-8"))  # Avisa erro
+            return  # Para função
+        
+        nome_arquivo = os.path.basename(caminho)  # Pega nome do arquivo
+        sock_envio.send(nome_arquivo.encode("utf-8"))  # Envia nome
+        time.sleep(0.1)  # Pausa
+        
+        with open(caminho, "rb") as f:  # Abre arquivo
+            while True:  # Loop para ler
                 bytes_lidos = f.read(4096)  # Lê 4KB
-                if not bytes_lidos:  # Se acabou o arquivo
-                    break  # Para o loop
-                sock.sendall(bytes_lidos)  # Envia o pedaço
+                if not bytes_lidos:  # Se acabou
+                    break  # Para loop
+                sock_envio.sendall(bytes_lidos)  # Envia pedaço
         
         time.sleep(0.1)  # Pausa
-        sock.send(b"<QSL>")  # Sinal de fim
-        print("Arquivo TCP enviado.")  # Confirma envio
+        sock_envio.send(b"<QSL>")  # Sinal de fim
     except Exception as e:  # Se der erro
-        print(f"Erro ao enviar arquivo TCP: {e}")  # Mostra o erro
+        raise e  # Repassa erro
 
-def receber_arquivo_tcp(sock):
-    """Recebe um arquivo via TCP."""
-    try:  # Tenta executar
-        nome_arquivo = sock.recv(1024).decode("utf-8")  # Recebe o nome do arquivo
+def receber_arquivo_tcp(sock_receber):
+    """Versão modificada da função original"""
+    try:  # Tenta receber
+        nome_arquivo = sock_receber.recv(1024).decode("utf-8")  # Recebe nome
         if nome_arquivo == "ERRO_ARQUIVO":  # Se houve erro
-            print("O outro usuário informou que o arquivo não existe.")  # Avisa
-            return  # Para a função
+            janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", "Arquivo não encontrado no remetente"))  # Avisa
+            return  # Para função
         
-        print(f"Recebendo '{nome_arquivo}' via TCP...")  # Avisa que está recebendo
-        with open(nome_arquivo, "wb") as f:  # Cria arquivo para salvar
-            while True:  # Loop para receber pedaços
-                bytes_recebidos = sock.recv(4096)  # Recebe 4KB
+        # Salva na pasta do executável atual
+        caminho_destino = os.path.join(os.getcwd(), nome_arquivo)  # Define caminho
+        
+        with open(caminho_destino, "wb") as f:  # Cria arquivo
+            while True:  # Loop para receber
+                bytes_recebidos = sock_receber.recv(4096)  # Recebe 4KB
                 if b"<QSL>" in bytes_recebidos:  # Se tem sinal de fim
                     f.write(bytes_recebidos.replace(b"<QSL>", b''))  # Remove sinal e salva
-                    break  # Para o loop
-                f.write(bytes_recebidos)  # Salva o pedaço
-        print("Arquivo TCP recebido com sucesso!")  # Confirma recebimento
+                    break  # Para loop
+                f.write(bytes_recebidos)  # Salva pedaço
     except Exception as e:  # Se der erro
-        print(f"Erro ao receber arquivo TCP: {e}")  # Mostra erro
+        raise e  # Repassa erro
 
-def enviar_arquivo_udp(sock, addr):
-    """Envia um arquivo via UDP com confirmação."""
-    try:  # Tenta executar
-        caminho = input("Digite o caminho do arquivo para enviar: ")  # Pede arquivo
-        if not os.path.exists(caminho):  # Verifica se existe
-            print("Arquivo não encontrado.")  # Avisa
-            sock.sendto("ERRO_ARQUIVO".encode("utf-8"), addr)  # Avisa o outro lado
+def enviar_arquivo_udp(sock_udp, addr, caminho):
+    """Versão modificada da função UDP original"""
+    try:  # Tenta enviar
+        if not os.path.exists(caminho):  # Se não existe
+            sock_udp.sendto("ERRO_ARQUIVO".encode("utf-8"), addr)  # Avisa erro
             return  # Para função
 
         nome_arquivo = os.path.basename(caminho)  # Pega nome
         tamanho_arquivo = os.path.getsize(caminho)  # Pega tamanho
         
-        print("Anunciando arquivo...")  # Avisa início
-        sock.sendto(f"{nome_arquivo}|{tamanho_arquivo}".encode("utf-8"), addr)  # Anuncia arquivo
+        sock_udp.sendto(f"{nome_arquivo}|{tamanho_arquivo}".encode("utf-8"), addr)  # Anuncia arquivo
         
-        sock.settimeout(5.0)  # Timeout de 5 segundos
-        dados, _ = sock.recvfrom(1024)  # Espera confirmação
+        sock_udp.settimeout(5.0)  # Timeout de 5 segundos
+        dados, _ = sock_udp.recvfrom(1024)  # Espera confirmação
         if dados != b"ACK_INICIO":  # Se não confirmou
-            print("O outro lado não confirmou o início da transferência.")  # Avisa
-            sock.settimeout(None)  # Remove timeout
+            sock_udp.settimeout(None)  # Remove timeout
             return  # Para função
         
-        print("O outro lado confirmou. Iniciando envio...")  # Confirmou
         num_pacote = 0  # Contador de pacotes
-        sock.settimeout(0.5)  # Timeout curto para cada pacote
+        sock_udp.settimeout(0.5)  # Timeout curto
         with open(caminho, "rb") as f:  # Abre arquivo
-            while True:  # Loop para ler arquivo
-                bytes_lidos = f.read(1400)  # Lê pedaço seguro para UDP
+            while True:  # Loop para ler
+                bytes_lidos = f.read(1400)  # Lê pedaço
                 if not bytes_lidos:  # Se acabou
                     break  # Para loop
                 
-                # Loop para reenviar até receber confirmação
-                while True:
+                while True:  # Loop de reenvio
                     pacote = f"{num_pacote}".encode('utf-8') + b'|' + bytes_lidos  # Monta pacote
-                    sock.sendto(pacote, addr)  # Envia pacote
+                    sock_udp.sendto(pacote, addr)  # Envia pacote
                     try:  # Tenta receber confirmação
-                        dados, _ = sock.recvfrom(1024)  # Recebe resposta
-                        if dados.decode('utf-8') == f"ACK|{num_pacote}":  # Se confirmou este pacote
-                            break  # Vai para próximo pacote
+                        dados, _ = sock_udp.recvfrom(1024)  # Recebe resposta
+                        if dados.decode('utf-8') == f"ACK|{num_pacote}":  # Se confirmou
+                            break  # Próximo pacote
                     except socket.timeout:  # Se não respondeu
-                        print(f"  Timeout! Reenviando pacote {num_pacote}...")  # Avisa reenvio
+                        continue  # Tenta novamente
                 num_pacote += 1  # Próximo pacote
         
-        sock.sendto(b"<FIN>", addr)  # Sinal de fim
-        print("Arquivo UDP enviado com sucesso!")  # Confirma
-    except socket.timeout:  # Se deu timeout
-        print("O outro lado não respondeu. Abortando.")  # Avisa timeout
+        sock_udp.sendto(b"<FIN>", addr)  # Sinal de fim
     except Exception as e:  # Se der erro
-        print(f"Erro ao enviar arquivo UDP: {e}")  # Mostra erro
+        raise e  # Repassa erro
     finally:  # Sempre executa
-        sock.settimeout(None)  # Remove timeout
+        sock_udp.settimeout(None)  # Remove timeout
 
-def receber_arquivo_udp(sock, addr):
-    """Recebe um arquivo via UDP com confirmação."""
-    try:  # Tenta executar
-        sock.settimeout(120.0)  # Timeout longo
-        # Recebe anúncio do arquivo
-        dados, _ = sock.recvfrom(1024)  # Recebe dados
-        # Verifica se é erro
-        if dados.decode("utf-8") == "ERRO_ARQUIVO":
-             print("O outro usuário informou que o arquivo não existe.")  # Avisa erro
-             return  # Para função
+def receber_arquivo_udp(sock_udp, addr):
+    """Versão modificada da função UDP original"""
+    try:  # Tenta receber
+        sock_udp.settimeout(120.0)  # Timeout longo
+        dados, _ = sock_udp.recvfrom(1024)  # Recebe anúncio
+        if dados.decode("utf-8") == "ERRO_ARQUIVO":  # Se é erro
+            janela_chat.after(0, lambda: adicionar_mensagem("SISTEMA", "Arquivo não encontrado no remetente"))  # Avisa
+            return  # Para função
+        
         nome_arquivo, tamanho_total_str = dados.decode("utf-8").split('|')  # Separa nome e tamanho
-        tamanho_total = int(tamanho_total_str)  # Converte tamanho para número
-        print(f"Recebendo '{nome_arquivo}' via UDP ({tamanho_total} bytes)...")  # Avisa início
-        # Confirma que está pronto
-        sock.sendto(b"ACK_INICIO", addr)  # Confirma
+        tamanho_total = int(tamanho_total_str)  # Converte tamanho
+        
+        # Salva na pasta do executável atual
+        caminho_destino = os.path.join(os.getcwd(), nome_arquivo)  # Define caminho
+        
+        sock_udp.sendto(b"ACK_INICIO", addr)  # Confirma início
+        
         bytes_recebidos = 0  # Contador de bytes
         pacote_esperado = 0  # Contador de pacotes
-        with open(nome_arquivo, "wb") as f:  # Cria arquivo
+        with open(caminho_destino, "wb") as f:  # Cria arquivo
             while bytes_recebidos < tamanho_total:  # Enquanto não recebeu tudo
-                dados, _ = sock.recvfrom(1400 + 100)  # Recebe pacote
+                dados, _ = sock_udp.recvfrom(1400 + 100)  # Recebe pacote
                 if dados == b"<FIN>":  # Se é sinal de fim
-                    break  # Para
+                    break  # Para loop
                 
                 num_pacote_str, chunk = dados.split(b'|', 1)  # Separa número e dados
                 num_pacote = int(num_pacote_str)  # Converte número
                 
                 if num_pacote == pacote_esperado:  # Se é o pacote certo
                     f.write(chunk)  # Salva dados
-                    sock.sendto(f"ACK|{num_pacote}".encode('utf-8'), addr)  # Confirma
+                    sock_udp.sendto(f"ACK|{num_pacote}".encode('utf-8'), addr)  # Confirma
                     bytes_recebidos += len(chunk)  # Atualiza contador
-                    pacote_esperado += 1  # Próximo pacote esperado
+                    pacote_esperado += 1  # Próximo esperado
                 else:  # Se pacote errado
                     ack_anterior = pacote_esperado - 1  # Último correto
-                    sock.sendto(f"ACK|{ack_anterior}".encode('utf-8'), addr)  # Confirma último correto
+                    sock_udp.sendto(f"ACK|{ack_anterior}".encode('utf-8'), addr)  # Confirma último correto
         
-        # Limpa buffer de pacotes atrasados
+        # Limpa buffer
         while True:
             try:
-                sock.settimeout(0.2)  # Timeout curto
-                dados, _ = sock.recvfrom(1024)  # Tenta receber
+                sock_udp.settimeout(0.2)  # Timeout curto
+                dados, _ = sock_udp.recvfrom(1024)  # Tenta receber
                 if dados == b"<FIN>":  # Se é fim
                     break  # Para
-            except socket.timeout:  # Se não recebeu nada
+            except socket.timeout:  # Se não recebeu
                 break  # Buffer limpo
-        print("Arquivo UDP recebido com sucesso!")  # Confirma
-    except socket.timeout:  # Se deu timeout
-        print("Timeout na transferência! O arquivo UDP pode estar incompleto.")  # Avisa problema
     except Exception as e:  # Se der erro
-        print(f"Erro ao receber arquivo UDP: {e}")  # Mostra erro
+        raise e  # Repassa erro
     finally:  # Sempre executa
-        sock.settimeout(None)  # Remove timeout
+        sock_udp.settimeout(None)  # Remove timeout
 
-# PROGRAMA PRINCIPAL
-while True:  # Loop do menu
-    # Pergunta o que o usuário quer ser
-    modo = input("Você quer ser (1) Host ou (2) Cliente? Digite 'sair' para fechar: ").lower()
+def criar_janela_chat():
+    """Cria a janela de chat"""
+    global janela_chat, area_mensagens, entrada_mensagem, btn_enviar, frame_turno, label_turno, running  # Usa variáveis globais
     
-    # LÓGICA DO HOST
-    if modo == '1':  # Se escolheu Host
-        porta = 50000  # Porta padrão
-        cliente_addr = None  # Endereço do cliente
-        # Pergunta protocolo
-        escolha_protocolo = input("Escolha o protocolo (1 para TCP, 2 para UDP): ")
-        # Define tipo de socket
-        tipo_socket = socket.SOCK_STREAM if escolha_protocolo == '1' else socket.SOCK_DGRAM
-        try:  # Tenta criar servidor
-            # Configuração automática para IPv4/IPv6
-            info_addr = socket.getaddrinfo(None, porta, socket.AF_UNSPEC, tipo_socket, 0, socket.AI_PASSIVE)[0]
-            sock = socket.socket(info_addr[0], info_addr[1])  # Cria socket
-            # Se IPv6, aceita também IPv4
-            if info_addr[0] == socket.AF_INET6:
-                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-            sock.bind(info_addr[4])  # Liga socket à porta
-            print(f"Servidor escutando em modo Dual-Stack na porta {porta}")  # Confirma
-        except Exception as e:  # Se der erro
-            print(f"Falha ao iniciar o servidor: {e}")  # Mostra erro
-            break  # Sai do programa
-        
-        # Configuração específica por protocolo
-        if escolha_protocolo == '1':  # TCP
-            sock.listen()  # Escuta conexões
-            conn, cliente_addr = sock.accept()  # Aceita cliente
-            print(f"Cliente conectado: {cliente_addr}")  # Confirma conexão
-        else:  # UDP
-            print(f"Aguardando primeira mensagem na porta {porta}...")  # Avisa espera
-            dados, cliente_addr = sock.recvfrom(1024)  # Primeira mensagem
-            print(f"Cliente estabelecido: {cliente_addr}")  # Confirma cliente
-        
-        print("Comandos: /sair e /enviar ")  # Mostra comandos
-        
-        # Loop principal do chat do Host
-        try:
-            while True:  # Chat infinito
-                # Host sempre escuta primeiro
-                print("\n--- Turno do Cliente --- \nAguardando ação do Cliente...")
-                if escolha_protocolo == '1':  # TCP
-                    msg_cliente = conn.recv(1024).decode("utf-8")  # Recebe mensagem
-                else:  # UDP
-                    dados, cliente_addr = sock.recvfrom(1024)  # Recebe mensagem
-                    msg_cliente = dados.decode("utf-8")
-                
-                # Processa ação do cliente
-                if msg_cliente.startswith('/enviar' or '/enviar '):  # Quer enviar arquivo
-                    print("Cliente está enviando um arquivo...")
-                    if escolha_protocolo == '1':  # TCP
-                        receber_arquivo_tcp(conn)
-                    else:  # UDP
-                        receber_arquivo_udp(sock, cliente_addr)
-                elif msg_cliente.lower() == '/sair':  # Quer sair
-                    print("Cliente encerrou o chat.")
-                    break
-                else:  # Mensagem normal
-                    print(f"Cliente: {msg_cliente}")
-                
-                # Vez do Host responder
-                print("\n--- Seu Turno (Host) ---")
-                msg_host = input("Você: ")  # Pede mensagem
-                
-                # Envia resposta
-                if escolha_protocolo == '1':  # TCP
-                    conn.send(msg_host.encode("utf-8"))
-                else:  # UDP
-                    sock.sendto(msg_host.encode("utf-8"), cliente_addr)
+    janela_chat = Toplevel()  # Cria janela secundária
+    janela_chat.title(f"Pychat P2P - {modo.upper()} ({protocolo})")  # Título com informações
+    janela_chat.geometry("600x500")  # Tamanho da janela
+    
+    # Frame superior para informações
+    frame_info = Frame(janela_chat, height=30)  # Cria área
+    frame_info.pack(fill=X, padx=5, pady=5)  # Posiciona
+    frame_info.pack_propagate(False)  # Mantém tamanho fixo
+    
+    # Texto com informações da conexão
+    info_text = f"Modo: {modo.upper()} | Protocolo: {protocolo}"  # Texto base
+    if cliente_addr:  # Se tem endereço do cliente
+        info_text += f" | Conectado: {cliente_addr}"  # Adiciona endereço
+    
+    Label(frame_info, text=info_text, font=("Arial", 9)).pack(pady=5)  # Cria rótulo
+    
+    # Área de mensagens com scroll
+    area_mensagens = scrolledtext.ScrolledText(janela_chat, state=DISABLED, 
+                                              wrap=WORD, height=20)  # Cria área de texto
+    area_mensagens.pack(fill=BOTH, expand=True, padx=5, pady=5)  # Posiciona
+    
+    # Frame inferior para entrada e botões
+    frame_inferior = Frame(janela_chat)  # Cria área
+    frame_inferior.pack(fill=X, padx=5, pady=5)  # Posiciona
+    
+    # Campo de entrada de mensagem
+    entrada_mensagem = Entry(frame_inferior, font=("Arial", 10))  # Cria campo
+    entrada_mensagem.pack(side=LEFT, fill=X, expand=True, padx=(0,5))  # Posiciona
+    entrada_mensagem.bind("<Return>", enviar_mensagem)  # Liga Enter ao envio
+    
+    # Botão de enviar
+    btn_enviar = Button(frame_inferior, text="Enviar", command=enviar_mensagem,
+                       font=("Arial", 9, "bold"))  # Cria botão
+    btn_enviar.pack(side=RIGHT, padx=2)  # Posiciona à direita
+    
+    # Frame para indicador de turno
+    frame_turno = Frame(janela_chat, height=25)  # Cria área do turno
+    frame_turno.pack(fill=X, padx=5, pady=(0,5))  # Posiciona
+    
+    label_turno = Label(frame_turno, font=("Arial", 9, "bold"))  # Cria rótulo do turno
+    label_turno.pack(pady=2)  # Posiciona
+    
+    # Configurações iniciais
+    running = True  # Marca que está rodando
+    atualizar_turno()  # Atualiza indicador de turno
+    
+    # Inicia thread para receber mensagens
+    thread_receber = threading.Thread(target=loop_receber_mensagens)  # Cria thread
+    thread_receber.daemon = True  # Thread morre com programa
+    thread_receber.start()  # Inicia thread
+    
+    janela_chat.protocol("WM_DELETE_WINDOW", fechar_chat)  # Ação ao fechar janela
+    adicionar_mensagem("SISTEMA", "Conexão estabelecida! Use /sair para encerrar.")  # Mensagem inicial
+    adicionar_mensagem("SISTEMA", "Comandos disponíveis: /enviar (para arquivos)")  # Mostra comandos
 
-                # Processa ação do Host
-                if msg_host.startswith('/enviar ' or '/enviar'):  # Quer enviar arquivo
-                    if escolha_protocolo == '1':  # TCP
-                        enviar_arquivo_tcp(conn)
-                    else:  # UDP
-                        enviar_arquivo_udp(sock, cliente_addr)
-                elif msg_host.lower() == '/sair':  # Quer sair
-                    print("Você encerrou o chat.")
-                    break
-        except (ConnectionResetError, BrokenPipeError, OSError):  # Erro de conexão
-            print("\nConexão com o cliente perdida.")
-        finally:  # Limpeza
-            if escolha_protocolo == '1' and 'conn' in locals():  # Se TCP
+def fechar_chat():
+    """Fecha a janela de chat"""
+    global running  # Usa variável global
+    
+    running = False  # Para as threads
+    
+    try:  # Tenta fechar conexões
+        if protocolo == 'TCP':  # Se TCP
+            if conn:  # Se tem conexão
                 conn.close()  # Fecha conexão
+        if sock:  # Se tem socket
             sock.close()  # Fecha socket
-            print("Servidor Encerrado.")
-        break  # Sai do menu
-    
-    # LÓGICA DO CLIENTE
-    elif modo == '2':  # Se escolheu Cliente
-        porta = 50000  # Porta padrão
-        cliente_IP = input("Digite o IP do Host (padrão 127.0.0.1): ") or "127.0.0.1"  # IP do host
-        ADDR = (cliente_IP, porta)  # Endereço completo
-        escolha_protocolo = input("Escolha o protocolo (1 para TCP, 2 para UDP): ")  # Protocolo
-        tipo_socket = socket.SOCK_STREAM if escolha_protocolo == '1' else socket.SOCK_DGRAM  # Tipo de socket
-        try:  # Tenta conectar
-            # Configuração automática
-            info_addr = socket.getaddrinfo(cliente_IP, porta, socket.AF_UNSPEC, tipo_socket)[0]
-            sock = socket.socket(info_addr[0], info_addr[1])  # Cria socket
-            if escolha_protocolo == '1':  # TCP
-                sock.connect(info_addr[4])  # Conecta
-                print("Conectado ao Host!")
-            else:  # UDP
-                sock.sendto("OI_HOST".encode("utf-8"), info_addr[4])  # Primeira mensagem
-                print("Contato UDP estabelecido!")
-        except Exception as e:  # Se der erro
-            print(f"Falha ao conectar: {e}")
-            break
+    except:  # Se der erro
+        pass  # Ignora erro
         
-        print("Comandos: /sair e /enviar")  # Mostra comandos
-        
-        # Loop principal do chat do Cliente
-        try:
-            while True:  # Chat infinito
-                # Cliente sempre fala primeiro
-                print("\n--- Seu Turno (Cliente) ---")
-                msg_para_enviar = input("Você: ")  # Pede mensagem
-                
-                # Envia mensagem
-                if escolha_protocolo == '1':  # TCP
-                    sock.send(msg_para_enviar.encode("utf-8"))
-                else:  # UDP
-                    sock.sendto(msg_para_enviar.encode("utf-8"), ADDR)
-                
-                # Processa própria ação
-                if msg_para_enviar.startswith('/enviar ' or '/enviar'):  # Quer enviar arquivo
-                    if escolha_protocolo == '1':  # TCP
-                        enviar_arquivo_tcp(sock)
-                    else:  # UDP
-                        enviar_arquivo_udp(sock, ADDR)
-                elif msg_para_enviar.lower() == '/sair':  # Quer sair
-                    print("Você encerrou o chat.")
-                    break
-                
-                # Vez do Host responder
-                print("\n--- Turno do Host ---")
-                print("Aguardando ação do Host...")
-                if escolha_protocolo == '1':  # TCP
-                    msg_recebida = sock.recv(1024).decode("utf-8")  # Recebe mensagem
-                else:  # UDP
-                    dados, _ = sock.recvfrom(1024)
-                    msg_recebida = dados.decode("utf-8")
-                
-                # Processa ação do Host
-                if msg_recebida.startswith('/enviar ' or '/enviar'):  # Host quer enviar arquivo
-                    print("Host está enviando um arquivo...")
-                    if escolha_protocolo == '1':  # TCP
-                        receber_arquivo_tcp(sock)
-                    else:  # UDP
-                        receber_arquivo_udp(sock, ADDR)
-                elif msg_recebida.lower() == '/sair':  # Host quer sair
-                    print("O Host encerrou o chat.")
-                    break
-                else:  # Mensagem normal
-                    print(f"Host: {msg_recebida}")
-        except (ConnectionResetError, BrokenPipeError, OSError):  # Erro de conexão
-            print("\nConexão com o Host perdida.")
-        finally:  # Limpeza
-            print("Cliente encerrado.")
-            sock.close()  # Fecha socket
-        break  # Sai do menu
+    janela_chat.destroy()  # Destroi janela
+    janela_config.deiconify()  # Mostra a janela de configuração novamente
 
-    elif modo == 'sair':  # Se quer sair
-        break  # Sai do programa
-    else:  # Opção inválida
-        print("Opção inválida. Tente novamente.")
+def fechar_aplicacao():
+    """Fecha a aplicação completamente"""
+    global running  # Usa variável global
+    
+    running = False  # Para as threads
+    try:  # Tenta fechar conexões
+        if sock:  # Se tem socket
+            sock.close()  # Fecha socket
+        if conn:  # Se tem conexão
+            conn.close()  # Fecha conexão
+    except:  # Se der erro
+        pass  # Ignora erro
+    janela_config.destroy()  # Destroi janela principal
+
+def iniciar():
+    """Inicia a aplicação"""
+    criar_janela_config()  # Cria janela de configuração
+    janela_config.mainloop()  # Inicia loop da interface
+
+iniciar()  # Chama função para iniciar programa
