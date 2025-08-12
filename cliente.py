@@ -2,7 +2,6 @@ import socket  # Biblioteca para comunicação em rede
 import time    # Biblioteca para funções de tempo (sleep)
 import os      # Biblioteca para operações do sistema operacional
 
-# --- FUNÇÕES DE ARQUIVO (SÓ FUNCIONAM EM TCP) ---
 def enviar_arquivo(conn):  # Função para enviar arquivo para o host
     try:
         # Pede ao usuário o caminho do arquivo
@@ -18,7 +17,7 @@ def enviar_arquivo(conn):  # Função para enviar arquivo para o host
         nome_arquivo = os.path.basename(caminho)
         conn.send(nome_arquivo.encode("utf-8"))  # Envia o nome do arquivo
         time.sleep(0.1)  # Pequena pausa para garantir que a mensagem chegue
-
+        
         # Abre o arquivo em modo binário para leitura
         with open(caminho, "rb") as f:
             while True:  # Loop infinito para ler o arquivo
@@ -29,7 +28,7 @@ def enviar_arquivo(conn):  # Função para enviar arquivo para o host
         time.sleep(0.1)  # Pausa antes de enviar sinal de fim
         conn.send(b"<EOF>")  # Envia sinal indicando fim do arquivo
         print("Arquivo e sinal de fim enviados.")  # Confirma envio
-
+        
     except Exception as e:  # Captura qualquer erro
         print(f"Erro ao enviar arquivo: {e}")  # Exibe o erro
 
@@ -59,38 +58,55 @@ def receber_arquivo(conn):  # Função para receber arquivo do host
                 f.write(bytes_recebidos)  # Escreve dados no arquivo
         
         print("Arquivo recebido com sucesso!")  # Confirma recebimento
-
+        
     except Exception as e:  # Captura erros
         print(f"Erro ao receber arquivo: {e}")
 
-# --- CONFIGURAÇÃO E CONEXÃO (Agora com escolha de protocolo) ---
+# ### MUDANÇA PRINCIPAL AQUI ###
+# --- CONFIGURAÇÃO E CONEXÃO com IPv4/IPv6 ---
 porta = 50000  # Porta de comunicação (mesma do host)
 
-# Pede IP do host ou usa padrão localhost
-cliente_IP = input("Digite o IP do Host (padrão 127.0.0.1): ") or "127.0.0.1"
-ADDR = (cliente_IP, porta)  # Tupla com endereço completo
+# Pede IP do host com exemplos de IPv4 e IPv6
+cliente_IP = input("Digite o IP do Host (Ex: 127.0.0.1 ou ::1): ") or "127.0.0.1"
 
 # Pergunta ao usuário qual protocolo usar
 escolha_protocolo = input("Escolha o protocolo (1 para TCP, 2 para UDP): ")
 
-if escolha_protocolo == '1':  # Se escolheu TCP
-    # Cria socket TCP (SOCK_STREAM = TCP)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print(f"Tentando conectar ao Host em {cliente_IP}:{porta}...")
-    sock.connect(ADDR)  # Conecta ao host
-    print("Conectado ao Host!")
+# Define o tipo de socket baseado na escolha do usuário
+if escolha_protocolo == '1':
+    tipo_socket = socket.SOCK_STREAM  # TCP - conexão confiável
+    print(f"Tentando conectar ao Host TCP em {cliente_IP}:{porta}...")
+else:
+    tipo_socket = socket.SOCK_DGRAM  # UDP - sem conexão
+    print(f"Estabelecendo contato UDP com {cliente_IP}:{porta}...")
+
+# Lógica robusta para se conectar a um endereço IPv4 ou IPv6
+try:
+    # Usamos getaddrinfo para que o Python descubra automaticamente
+    # se o IP fornecido é IPv4 ou IPv6 e configure corretamente o socket
+    # AF_UNSPEC = permite tanto IPv4 quanto IPv6
+    info_addr = socket.getaddrinfo(cliente_IP, porta, socket.AF_UNSPEC, tipo_socket)[0]
     
-else:  # Se escolheu UDP
-    # Cria socket UDP (SOCK_DGRAM = UDP)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    # Em UDP, envia primeira mensagem para estabelecer "conexão"
-    sock.sendto("OI_HOST".encode("utf-8"), ADDR)
-    print("Contato UDP estabelecido!")
+    # Cria o socket usando as informações corretas (IPv4 ou IPv6)
+    sock = socket.socket(info_addr[0], info_addr[1])
+    
+    # Se for TCP, conecta ao host. Se for UDP, já está "pronto" para enviar.
+    if escolha_protocolo == '1':  # TCP precisa estabelecer conexão
+        sock.connect(info_addr[4])  # Conecta usando o endereço correto
+        print("Conectado ao Host!")
+    else:  # UDP não precisa conectar, só enviar
+        # Em UDP, a primeira mensagem já estabelece o contato com o host
+        sock.sendto("OI_HOST".encode("utf-8"), info_addr[4])
+        print("Contato UDP estabelecido!")
+
+except Exception as e:  # Se algo der errado na conexão
+    print(f"Falha ao conectar: {e}")
+    exit()  # Encerra o programa
 
 # Exibe instruções para o usuário
 print("OS COMANDOS SÃO /sair e /enviar 'nome.extensão' (apenas TCP)")
 
-# --- LOOP PRINCIPAL MODIFICADO PARA ACEITAR UDP ---
+# --- LOOP PRINCIPAL ---
 while True:  # Loop infinito do chat
     try:
         print("\n--- Seu Turno (Cliente) ---")  # Indica turno do cliente
@@ -100,30 +116,30 @@ while True:  # Loop infinito do chat
         if msgcliente.startswith('/enviar ') and escolha_protocolo == '1':
             sock.send("ENVIAR".encode("utf-8"))  # Avisa que vai enviar
             enviar_arquivo(sock)  # Chama função de envio
-        
+            
         # Se tentou enviar arquivo em UDP
         elif msgcliente.startswith('/enviar ') and escolha_protocolo == '2':
             print("ERRO: Envio de arquivos só é permitido em TCP, peste ruim!")
             # Envia mensagem vazia para manter o protocolo
-            sock.sendto("CHAT".encode("utf-8"), ADDR)
-            sock.sendto("".encode("utf-8"), ADDR)
-
+            sock.sendto("CHAT".encode("utf-8"), (cliente_IP, porta))
+            sock.sendto("".encode("utf-8"), (cliente_IP, porta))
+            
         # Se cliente quer sair
         elif msgcliente.lower() == '/sair':
             if escolha_protocolo == '1':  # TCP
                 sock.send("SAIR".encode("utf-8"))  # Avisa o host
             else:  # UDP
-                sock.sendto("SAIR".encode("utf-8"), ADDR)
+                sock.sendto("SAIR".encode("utf-8"), (cliente_IP, porta))
             print("Você encerrou o chat.")
             break  # Sai do loop
-        
+            
         else:  # Se não é comando, é mensagem normal
             if escolha_protocolo == '1':  # TCP
                 sock.send("CHAT".encode("utf-8"))  # Avisa que é chat
                 sock.send(msgcliente.encode("utf-8"))  # Envia mensagem
             else:  # UDP
-                sock.sendto("CHAT".encode("utf-8"), ADDR)  # Avisa que é chat
-                sock.sendto(msgcliente.encode("utf-8"), ADDR)  # Envia mensagem
+                sock.sendto("CHAT".encode("utf-8"), (cliente_IP, porta))  # Avisa que é chat
+                sock.sendto(msgcliente.encode("utf-8"), (cliente_IP, porta))  # Envia mensagem
 
         print("\n--- Turno do Host ---")  # Indica turno do host
         print("Aguardando ação do Host...")  # Informa que está esperando
@@ -143,17 +159,17 @@ while True:  # Loop infinito do chat
                 dados, _ = sock.recvfrom(1024)  # Recebe mensagem
                 msg = dados.decode("utf-8")
             print(f"Host: {msg}")  # Exibe mensagem do host
-
+            
         elif acao_host == "ENVIAR":  # Se host quer enviar arquivo
             if escolha_protocolo == '1':  # Só funciona em TCP
                 receber_arquivo(sock)  # Chama função para receber
             else:  # Em UDP ignora
                 print("Host tentou enviar arquivo em modo UDP. Ação ignorada.")
-        
+                
         elif acao_host.lower() == "sair":  # Se host quer sair
             print("O Host encerrou o chat.")
             break  # Sai do loop principal
-
+            
     except (ConnectionResetError, BrokenPipeError, OSError):  # Captura erros de conexão
         print("\nConexão com o Host perdida.")
         break  # Sai do loop
