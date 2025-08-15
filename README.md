@@ -110,10 +110,10 @@ A evolução final do projeto, substituindo o terminal por uma interface gráfic
 
 ## 👥 Desenvolvedores
 
-**Abner Vitor Silva Nascimento**
-**Ana Leticia Alves de Lima**
-**Maria Valentina de Oliveira Menezes**
-**Pedro Lucas Araujo Fernandes**
+* **Abner Vitor Silva Nascimento(20241054010044)**
+* **Ana Leticia Alves de Lima(20251054010081)**
+* **Maria Valentina de Oliveira Menezes(20241054010046)**
+* **Pedro Lucas Araujo Fernandes(20241054010067)**
 
 
 * **Email:** `abner.vnascimento@gmail.com`
